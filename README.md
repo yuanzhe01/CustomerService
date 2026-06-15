@@ -46,7 +46,7 @@
 - 向量库：`Milvus`
 - 关系型存储：`PostgreSQL`
 - 缓存：`Redis`
-- Embedding：本地 `bge-m3` 模型
+- Embedding：本地 `bge-m3` 模型 + BM25 sparse embedding
 - 前端：原生 `HTML + CSS + JavaScript`，通过 `Vue 3 CDN` 增强交互
 
 ## 系统架构
