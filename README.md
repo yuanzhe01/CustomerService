@@ -1,6 +1,9 @@
 # 智服AI客服工作台
 
-一个基于 `FastAPI + LangChain + Milvus + PostgreSQL + Redis` 的智能客服Agent项目，支持多轮对话、知识库检索增强、文档上传入库、Skill动态加载，以及面向业务人员的Web工作台。<img width="1621" height="845" alt="屏幕截图 2026-06-15 162558" src="https://github.com/user-attachments/assets/ab6c1979-9eb2-4d8a-a3fb-a8e809d03d53" />
+一个基于 `FastAPI + LangChain + Milvus + PostgreSQL + Redis` 的智能客服Agent项目，支持多轮对话、知识库检索增强、文档上传入库、Skill动态加载，以及面向业务人员的Web工作台。
+<img width="1621" height="845" alt="屏幕截图 2026-06-15 162558" src="https://github.com/user-attachments/assets/ab6c1979-9eb2-4d8a-a3fb-a8e809d03d53" />
+<img width="1622" height="844" alt="屏幕截图 2026-06-15 162848" src="https://github.com/user-attachments/assets/5edf6934-820f-40f4-975b-ffaa1fa15218" />
+
 
 
 项目同时提供后端API和内置前端页面，适合用作以下场景的原型或内部系统基础：
