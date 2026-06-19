@@ -3,6 +3,7 @@ from typing import List, Tuple, Dict, Any
 import json
 import requests
 import logging
+import threading
 import traceback
 
 from backend.app.integrations.milvus_client import MilvusManager
@@ -40,6 +41,7 @@ LEAF_RETRIEVE_LEVEL = 3    # 向量检索时，只检索这个层级的分块
 _milvus_manager = MilvusManager()
 _parent_chunk_store = ParentChunkStore()
 _stepback_model = None
+_stepback_model_lock = threading.Lock()
 
 
 _dashscope_client = OpenAI(
@@ -201,14 +203,16 @@ def _get_stepback_model():
         return None
     
     if _stepback_model is None:
-        logger.info("Initializing step-back chat model: %s", MODEL)
-        _stepback_model = init_chat_model(
-            model=MODEL,
-            model_provider="openai",
-            api_key=API_KEY,
-            base_url=BASE_URL,
-            temperature=0.2,
-        )
+        with _stepback_model_lock:
+            if _stepback_model is None:
+                logger.info("Initializing step-back chat model: %s", MODEL)
+                _stepback_model = init_chat_model(
+                    model=MODEL,
+                    model_provider="openai",
+                    api_key=API_KEY,
+                    base_url=BASE_URL,
+                    temperature=0.2,
+                )
     return _stepback_model
 
 

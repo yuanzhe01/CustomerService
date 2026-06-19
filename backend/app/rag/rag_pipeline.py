@@ -1,4 +1,5 @@
 from typing import Literal, TypedDict, List, Optional
+import threading
 from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
@@ -12,6 +13,8 @@ MODEL = LLM_MODEL
 
 _grader_model = None
 _router_model = None
+_grader_model_lock = threading.Lock()
+_router_model_lock = threading.Lock()
 
 # 私有函数：创建并返回文档相关性评分专用的LLM模型
 def _get_grader_model():
@@ -21,14 +24,16 @@ def _get_grader_model():
         return None
     
     if _grader_model is None:
-        _grader_model = init_chat_model(
-            model = MODEL,
-            model_provider = "openai",
-            api_key = API_KEY,
-            base_url = BASE_URL,
-            temperature = 0,      # 温度=0，输出绝对稳定，不随机
-            stream_usage = True,
-        )
+        with _grader_model_lock:
+            if _grader_model is None:
+                _grader_model = init_chat_model(
+                    model = MODEL,
+                    model_provider = "openai",
+                    api_key = API_KEY,
+                    base_url = BASE_URL,
+                    temperature = 0,      # 温度=0，输出绝对稳定，不随机
+                    stream_usage = True,
+                )
     return _grader_model
 
 # 私有函数：创建并返回RAG路由决策专用的LLM模型
@@ -39,14 +44,16 @@ def _get_router_model():
         return None
     
     if _router_model is None:
-        _router_model = init_chat_model(
-            model = MODEL,
-            model_provider = "openai",
-            api_key = API_KEY,
-            base_url = BASE_URL,
-            temperature = 0,
-            stream_usage = True,
-        )
+        with _router_model_lock:
+            if _router_model is None:
+                _router_model = init_chat_model(
+                    model = MODEL,
+                    model_provider = "openai",
+                    api_key = API_KEY,
+                    base_url = BASE_URL,
+                    temperature = 0,
+                    stream_usage = True,
+                )
     return _router_model
 
 GRADE_PROMPT = (

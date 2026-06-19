@@ -1,52 +1,45 @@
 # 智服AI客服工作台
 
-一个基于 `FastAPI + LangChain + Milvus + PostgreSQL + Redis` 的智能客服Agent项目，支持多轮对话、知识库检索增强、文档上传入库、Skill动态加载，以及面向业务人员的Web工作台。
-<img width="1621" height="845" alt="屏幕截图 2026-06-15 162558" src="https://github.com/user-attachments/assets/ab6c1979-9eb2-4d8a-a3fb-a8e809d03d53" />
-<img width="1622" height="844" alt="屏幕截图 2026-06-15 162848" src="https://github.com/user-attachments/assets/5edf6934-820f-40f4-975b-ffaa1fa15218" />
+这是一个基于`FastAPI + LangChain + Milvus + PostgreSQL + Redis`的智能客服Agent项目，支持多轮对话、知识库检索增强、文档上传入库、Skill动态加载、MCP工具调用，以及面向业务人员的Web工作台。项目同时提供后端API和内置前端页面，适合用作以下场景的原型或内部系统基础：
 
-
-
-项目同时提供后端API和内置前端页面，适合用作以下场景的原型或内部系统基础：
+## 应用场景
 
 - 企业知识库问答
 - 售前/售后客服辅助
-- SOP与文档检索增强问答
-- 可扩展的Skill化业务能力注入 
+- SOP 文档检索问答
 
-## 项目特性
+## 效果展示
+
+![系统架构](images/xiaoguozhanshi01.png)
+
+## 项目核心能力
 
 - 多轮对话
-  - 支持按用户维度保存会话、查看历史会话、删除会话
-  - 支持普通返回和流式返回
+  - 支持按用户维度进行会话隔离、持久化存储、历史溯源与清理
+  - 支持标准同步响应与流式（Streaming）输出，保障极致且流畅的交互体验
 - RAG 检索增强
-  - 基于 Milvus 做向量检索
-  - 结合本地 dense embedding 和 BM25 sparse embedding
-  - 支持混合召回、RRF 融合、Rerank、查询重写、Step-back、HyDE
-  - 返回可视化 `rag_trace`，便于调试检索过程
+  - 结合本地 Dense Embedding 与 BM25 Sparse Embedding，依托 Milvus 实现高性能向量检索
+  - 内置混合召回、RRF（倒数秩融合）、Rerank（重排）、查询重写、Step-back 与 HyDE退回策略，大幅提升问答精度
 - 文档知识库
-  - 自动三层分块
-  - 父级分块落 PostgreSQL，叶子分块落 Milvus
-  - 支持异步上传、异步删除和前端进度展示
-- Skill 能力扩展
-  - 支持上传 Skill zip 包
-  - 自动扫描 `SKILL.md` 和关联资源
-  - Agent 可按需发现、加载、复用 Skill 上下文
+  - 采用自动化三层分块策略，父级 Chunk 沉淀至 PostgreSQL 保证结构完整，叶子 Chunk 存入 Milvus 提升检索效率
+  - 支持文档的异步解析、上传与删除，搭配前端实时进度反馈，保障大文件处理时系统的高吞吐与高可用
+- 动态插件扩展
+  - 支持通过 ZIP 包一键上传 Skill，系统自动扫描并解析 `SKILL.md` 及关联资源，实现能力的快速接入
+  - 支持集成 Model Context Protocol (MCP) Server，通过统一接口无缝对接外部工具集
+  - 智能体可根据对话意图，按需自动发现、动态加载并复用 Skill 与 MCP 上下文，实现无缝的业务功能扩展
 - 权限体系
-  - 支持用户注册、登录、JWT 鉴权
-  - 支持普通用户 / 管理员角色
-  - 管理员可管理知识库与 Skill
-- 内置前端
-  - 提供客服工作台 UI
-  - 支持登录、聊天、会话中心、知识库管理、Skill 管理
+  - 提供完整的注册与登录闭环，基于 JWT 实现安全、可靠的无状态接口鉴权
+  - 无缝集成登录鉴权、智能对话、会话中心、知识管理及插件配置等核心业务模块
+
 
 ## 技术栈
 
 - 后端：`FastAPI`、`SQLAlchemy`、`Uvicorn`
-- Agent：`LangChain`、`LangGraph`
+- Agent：`LangChain`、`LangGraph`、`langchain-mcp-adapters`
 - 向量库：`Milvus`
 - 关系型存储：`PostgreSQL`
 - 缓存：`Redis`
-- Embedding：本地 `bge-m3` 模型 + BM25 sparse embedding
+- Embedding：本地 `bge-m3` 模型 + `BM25 sparse embedding`
 - 前端：原生 `HTML + CSS + JavaScript`，通过 `Vue 3 CDN` 增强交互
 
 ## 系统架构
@@ -60,12 +53,14 @@ Frontend Workbench
         +-- Auth / Session / Chat API
         +-- Document Upload / Delete API
         +-- Skill Management API
+        +-- MCP Server Management API
         |
         v
    LangChain Agent
         |
         +-- search_knowledge_base
         +-- list_skills / load_skill / load_skill_resource
+        +-- Dynamic MCP Tools (via MultiServerMCPClient)
         |
         v
    RAG Pipeline
@@ -75,9 +70,15 @@ Frontend Workbench
         +-- Hybrid Retrieve / Rerank / Auto-merge
         |
         +-- Milvus        -> leaf chunks
-        +-- PostgreSQL    -> users, sessions, parent chunks
+        +-- PostgreSQL    -> users, sessions, parent chunks, MCP configs
         +-- Redis         -> conversation cache
 ```
+
+## 工作流图
+
+下面这张图基于当前项目实际代码整理：主对话由 `LangChain Agent` 驱动；当 Agent 调用 `search_knowledge_base` 时，会进入 `LangGraph` 编排的 RAG 子流程。
+
+![系统架构](images/rag_agent_flow_v2.png)
 
 ## 目录结构
 
@@ -90,7 +91,13 @@ agent/
 │     ├─ schemas.py               # 全部 API 的 Pydantic 请求/响应模型
 │     ├─ tools.py                 # 暴露给 Agent 的 LangChain 工具集合
 │     ├─ api/
-│     │  └─ router.py             # HTTP 路由入口，聚合认证/会话/聊天/知识库/Skill/MCP 接口
+│     │  ├─ _shared.py            # API 共享通用函数
+│     │  ├─ auth.py               # 认证相关接口
+│     │  ├─ chat.py               # 聊天与会话相关接口
+│     │  ├─ documents.py          # 文档上传、删除与任务查询接口
+│     │  ├─ mcp.py                # MCP Server 管理接口
+│     │  ├─ skills.py             # Skill 技能包管理接口
+│     │  └─ router.py             # HTTP 路由聚合入口
 │     ├─ core/
 │     │  ├─ config.py             # 环境变量读取与全局配置
 │     │  ├─ security.py           # JWT、密码哈希、角色权限、依赖注入
@@ -125,39 +132,6 @@ agent/
 └─ README.md                      # 项目说明文档
 ```
 
-### 文件作用说明
-
-- `app.py`：保留原有启动方式，内部转发到 `backend.app.main`，避免重构后本地启动命令失效。
-- `backend/app/main.py`：创建 FastAPI 应用、注册路由、初始化数据库、挂载 `frontend/` 静态页面。
-- `backend/app/api/router.py`：集中定义所有 HTTP 接口，是前端调用后端能力的统一入口。
-- `backend/app/core/config.py`：读取 `.env` 中的数据库、Redis、Milvus、模型与服务端口等配置。
-- `backend/app/core/security.py`：封装登录认证、JWT 生成校验、管理员校验和数据库依赖。
-- `backend/app/core/cache.py`：封装 Redis 读写，给会话缓存和父级分块缓存复用。
-- `backend/app/db/session.py`：维护 SQLAlchemy 连接、会话工厂和 `init_db()` 初始化逻辑。
-- `backend/app/db/models.py`：定义 `User`、`ChatSession`、`ChatMessage`、`ParentChunk`、`MCPServerConfig` 等表结构。
-- `backend/app/schemas.py`：定义认证、会话、聊天、文档、Skill、MCP 等接口的数据结构。
-- `backend/app/services/agent_service.py`：负责 Agent 构建、工具来源标记、会话存储、聊天与流式聊天执行。
-- `backend/app/tools.py`：定义 `search_knowledge_base`、`list_skills`、`load_skill` 等可供 Agent 调用的工具。
-- `backend/app/rag/document_loader.py`：负责业务文档加载、清洗和三级分块。
-- `backend/app/rag/rag_pipeline.py`：编排检索、评估、查询重写、生成答案等 RAG 工作流节点。
-- `backend/app/rag/rag_utils.py`：实现检索召回、Rerank、Step-back、HyDE、Auto-merging 等核心算法逻辑。
-- `backend/app/rag/parent_chunk_store.py`：将父级分块写入 PostgreSQL，并通过 Redis 做热点缓存。
-- `backend/app/integrations/embedding.py`：加载本地 `bge-m3` 模型，维护 dense/sparse embedding 与 BM25 状态。
-- `backend/app/integrations/milvus_client.py`：封装 Milvus 的集合初始化、向量插入、混合检索与删除操作。
-- `backend/app/integrations/milvus_writer.py`：把文档批量向量化后写入 Milvus。
-- `backend/app/jobs/upload_jobs.py`：维护上传与删除任务的进度、状态与步骤信息，供前端轮询展示。
-- `backend/app/skills/skill_loader.py`：扫描 `skills/` 目录、解析 `SKILL.md` frontmatter，并按需读取资源文件。
-- `frontend/index.html`：管理后台页面结构，承载登录、聊天、知识库和 Skill 管理视图。
-- `frontend/script.js`：负责前端事件绑定、SSE 流式处理、会话切换与后台接口调用。
-- `frontend/style.css`：负责工作台布局、组件样式与交互状态样式。
-- `frontend/favicon.ico`：浏览器页签图标资源。
-- `skills/`：外部技能包目录，每个技能由 `SKILL.md` 和若干 `references/`、`assets/`、`scripts/` 资源组成。
-- `.env`：本地实际运行配置，通常不提交到仓库。
-- `.env.example`：给新环境初始化用的配置模板。
-- `docker-compose.yml`：用于本地拉起 Milvus 等依赖服务。
-- `README.md`：项目使用说明、架构说明和目录说明。
-- `backend/`、`backend/app/` 及其子目录下的 `__init__.py`：Python 包标记文件，用于支持包内导入与模块组织。
-
 ## 核心能力说明
 
 ### 1. 对话能力
@@ -166,6 +140,7 @@ agent/
 - 对话消息存储在 PostgreSQL 中
 - Redis 用于缓存消息与会话元数据
 - 支持 `/chat` 普通响应和 `/chat/stream` SSE 流式响应
+- 当一个窗口中的历史对话过长时，agent会自动进行会话摘要，减少上下文长度
 
 ### 2. 知识库能力
 
@@ -198,6 +173,13 @@ skills/
 - `SKILL.md` 是入口文件
 - 支持在 frontmatter 中定义 `name`、`description`、`references`
 - Agent 可以通过工具动态读取 Skill 内容和资源文件
+
+### 4. MCP 工具调用能力
+
+- 支持集成 Model Context Protocol (MCP) Server，通过 `langchain-mcp-adapters` 将其暴露给 Agent
+- 支持动态管理 MCP 配置，包括名称、传输方式（`stdio` / `sse`）、命令、环境变量等
+- 在运行时给 MCP 工具自动注入元数据标签，以便 Agent 区分并高效使用
+
 
 ## API 概览
 
@@ -234,6 +216,13 @@ skills/
 - `GET /admin/skills`：获取 Skill 列表
 - `POST /admin/skills/upload`：上传 Skill zip 包
 
+### MCP 管理
+
+- `GET /admin/mcp-servers`：获取 MCP Server 列表
+- `POST /admin/mcp-servers`：创建/上传 MCP Server 配置
+- `PUT /admin/mcp-servers/{server_id}`：更新 MCP Server 配置
+- `DELETE /admin/mcp-servers/{server_id}`：删除 MCP Server
+
 ## 前端说明
 
 前端资源位于 `frontend/` 目录，由 FastAPI 直接托管，包含：
@@ -247,23 +236,17 @@ skills/
 
 因此这个项目默认是“单体交付”风格：后端 API 和前端页面一起运行，不需要再单独起一个前端开发服务器。
 
-## 开发建议
-
-这个项目已经具备一个完整 AI 客服系统原型的核心骨架，后续可以继续往下面扩展：
-
-- 接入更多文档格式
-- 增加工单系统或CRM对接
-- 增加更细粒度权限控制
-- 增加测试、日志和监控
-- 支持多模型切换与配置中心
-- 支持对象存储和分布式任务队列
-
 ## 致谢
-本项目基于icey1287/SuperMew二次开发，感谢原作者的开源贡献。
+本项目基于 [icey1287/SuperMew](https://github.com/icey1287/SuperMew) 二次开发，感谢原作者的开源贡献。
 在原有基础上新增/优化了以下特性：
-1. 修改了BM25的Tokenizer方法，先用正则把中英文片段切出来，中文交给jieba分词，英文/数字片段整体保留，最终用于BM25稀疏向量构建
+1. 优化了 BM25 的 Tokenizer 方法：先用正则切分中英文片段，中文片段交由 jieba 分词，英文/数字片段整体保留，最终用于 BM25 稀疏向量构建
 2. Skill模块化扩展：支持将客服话术、业务规则、处理流程和参考资料封装为独立Skill。Agent可根据用户任务动态发现并加载对应Skill，在不改动主对话流程的情况下扩展新能力，提升回答的专业性和可维护性
-3. 使用ContextVar管理请求级上下文，替代简单全局变量，避免并发场景下的上下文污染，提升异步对话链路的隔离性和稳定性
+3. MCP模块化扩展：支持 Agent 在运行时根据 stdio 或 Streamable HTPP 模式动态调用外部 MCP Server 的能力
+4. 使用 ContextVar 管理请求级上下文，替代简单全局变量，避免并发场景下的上下文污染，提升异步对话链路的隔离性和稳定性
+5. 优化了 RAG 模型单例初始化机制：为_stepback_model、 _grader_model 和 _router_model增加带锁的懒初始化，避免高并发首次访问时重复创建模型实例，提升 RAG 链路在并发场景下的稳定性与资源利用效率
+-
+-
+-
 
 ## 许可证
 MIT License
