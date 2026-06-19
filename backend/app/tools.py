@@ -8,7 +8,7 @@ try:
 except ImportError:
     from langchain_core.tools import tool
 
-from skill_loader import (
+from backend.app.skills.skill_loader import (
     list_skills_text,
     load_skill_content,
     list_skill_resources_content,
@@ -133,7 +133,7 @@ async def search_knowledge_base(query: str) -> str:
         )
     _KNOWLEDGE_TOOL_CALLS_THIS_TURN.set(knowledge_tool_calls + 1)
 
-    from rag_pipeline import run_rag_graph
+    from backend.app.rag.rag_pipeline import run_rag_graph
 
     rag_result = await asyncio.to_thread(run_rag_graph, query)
     docs = rag_result.get("docs", []) if isinstance(rag_result, dict) else []

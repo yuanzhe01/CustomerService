@@ -1,7 +1,7 @@
 from datetime import datetime
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from database import Base
+from backend.app.db.session import Base
 
 # ORM机制：Python类 = 数据库的一张表，类里的属性 = 表的字段（列）
 class User(Base):
@@ -62,3 +62,29 @@ class ParentChunk(Base):
     chunk_level: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     chunk_idx: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+# 用于存储MCP服务器配置（保存传输方式、启用状态、命令、参数、环境变量、URL、请求头、上传的文件、上传的资产目录、上传的资产路径、创建者用户ID、创建时间、更新时间等）
+class MCPServerConfig(Base):
+    __tablename__ = "mcp_server_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    transport: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    command: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    args_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    env_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    url: Mapped[str] = mapped_column(String(1024), default="", nullable=False)
+    headers_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    uploaded_filename: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    uploaded_asset_dir: Mapped[str] = mapped_column(String(1024), default="", nullable=False)
+    uploaded_asset_path: Mapped[str] = mapped_column(String(1024), default="", nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_by = relationship("User")

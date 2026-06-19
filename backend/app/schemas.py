@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 
 
@@ -182,3 +182,36 @@ class SkillInfo(BaseModel):
 
 class SkillListResponse(BaseModel):
     skills: List[SkillInfo]
+
+
+class MCPServerInfo(BaseModel):
+    id: int
+    name: str
+    description: str = ""
+    transport: str
+    enabled: bool
+    command: str = ""
+    args_json: List = Field(default_factory=list)
+    env_json: dict = Field(default_factory=dict)
+    url: str = ""
+    headers_json: dict = Field(default_factory=dict)
+    uploaded_filename: str = ""
+    uploaded_asset_dir: str = ""
+    uploaded_asset_path: str = ""
+    created_by: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class MCPServerListResponse(BaseModel):
+    servers: List[MCPServerInfo]
+
+
+class MCPServerMutationResponse(BaseModel):
+    server: MCPServerInfo
+    message: str
+
+
+class MCPServerDeleteResponse(BaseModel):
+    id: int
+    message: str

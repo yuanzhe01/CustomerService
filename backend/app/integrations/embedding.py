@@ -12,7 +12,8 @@ from pathlib import Path
 from langchain_huggingface import HuggingFaceEmbeddings
 import jieba
 
-_DEFAULT_STATE_PATH = Path(__file__).resolve().parent.parent / "data" / "bm25_state.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_DEFAULT_STATE_PATH = PROJECT_ROOT.parent / "data" / "bm25_state.json"
 
 
 def _create_dense_embedder() -> HuggingFaceEmbeddings:

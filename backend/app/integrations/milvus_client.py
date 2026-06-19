@@ -1,7 +1,7 @@
 import threading
 from typing import Callable, TypeVar
 from pymilvus import MilvusClient, DataType, AnnSearchRequest, RRFRanker
-from settings import MILVUS_COLLECTION_NAME, MILVUS_URI
+from backend.app.core.config import MILVUS_COLLECTION_NAME, MILVUS_URI
 
 # Milvus单次query的limit上限
 QUERY_MAX_LIMIT = 16384

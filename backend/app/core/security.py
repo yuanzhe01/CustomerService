@@ -8,10 +8,10 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
-from database import SessionLocal
-from models import User
+from backend.app.db.session import SessionLocal
+from backend.app.db.models import User
 from passlib.context import CryptContext
-from settings import (
+from backend.app.core.config import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     ADMIN_INVITE_CODE,
     JWT_ALGORITHM,

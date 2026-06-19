@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>智服AI客服工作台</title>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
     <link rel="stylesheet" href="style.css">
     <!-- Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -55,6 +56,9 @@
                 </button>
                 <button @click="handleSkillCenter" :class="['nav-btn', {active: activeNav === 'skills'}]">
                     <i :class="isAdmin ? 'fas fa-wand-magic-sparkles' : 'fas fa-lock'"></i> {{ isAdmin ? 'Skill管理' : 'Skill管理（管理员）' }}
+                </button>
+                <button @click="handleMcpCenter" :class="['nav-btn', {active: activeNav === 'mcp'}]">
+                    <i :class="isAdmin ? 'fas fa-plug-circle-bolt' : 'fas fa-lock'"></i> {{ isAdmin ? 'MCP管理' : 'MCP管理（管理员）' }}
                 </button>
             </nav>
             <div class="sidebar-section">
@@ -222,6 +226,171 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <div v-if="isAuthenticated && isAdmin && activeNav === 'mcp'" class="settings-panel">
+                <div class="settings-header">
+                    <div class="panel-badge">Admin Console</div>
+                    <h2><i class="fas fa-plug-circle-bolt"></i> MCP管理</h2>
+                    <p>配置 agent 可调用的外部 MCP Server，支持本地 stdio 模式和远程 streamable-http 模式。</p>
+                </div>
+
+                <div class="mcp-layout">
+                    <section class="mcp-form-card">
+                        <div class="skills-section-header">
+                            <div>
+                                <h3><i class="fas fa-sliders"></i> {{ mcpFormMode === 'create' ? '新增 MCP 配置' : '编辑 MCP 配置' }}</h3>
+                                <p>stdio 支持上传脚本或 zip 包，HTTP 模式可配置 URL 与请求头。</p>
+                            </div>
+                            <button @click="resetMcpForm()" class="btn-secondary">
+                                <i class="fas fa-rotate"></i> 重置表单
+                            </button>
+                        </div>
+
+                        <div class="mcp-form-grid">
+                            <label class="mcp-field">
+                                <span>名称</span>
+                                <input v-model="mcpForm.name" type="text" placeholder="例如：weather-http / local-filesystem" />
+                            </label>
+
+                            <label class="mcp-field">
+                                <span>传输方式</span>
+                                <select v-model="mcpForm.transport">
+                                    <option value="stdio">stdio</option>
+                                    <option value="http">streamable-http</option>
+                                </select>
+                            </label>
+
+                            <label class="mcp-field">
+                                <span>启用状态</span>
+                                <select v-model="mcpForm.enabled">
+                                    <option :value="true">启用</option>
+                                    <option :value="false">停用</option>
+                                </select>
+                            </label>
+
+                            <label class="mcp-field mcp-field-full">
+                                <span>描述</span>
+                                <textarea v-model="mcpForm.description" rows="2" placeholder="说明这个 MCP Server 提供什么能力"></textarea>
+                            </label>
+
+                            <template v-if="mcpForm.transport === 'stdio'">
+                                <label class="mcp-field">
+                                    <span>command</span>
+                                    <input v-model="mcpForm.command" type="text" placeholder="例如：python / node / uvx" />
+                                </label>
+
+                                <label class="mcp-field">
+                                    <span>资源文件</span>
+                                    <div class="mcp-file-row">
+                                        <input
+                                            type="file"
+                                            ref="mcpFileInput"
+                                            @change="handleMcpFileSelect"
+                                            accept=".zip,.py,.js,.mjs,.exe,.bat,.cmd"
+                                        />
+                                        <div v-if="selectedMcpFile" class="selected-file-inline">{{ selectedMcpFile.name }}</div>
+                                    </div>
+                                </label>
+
+                                <label class="mcp-field mcp-field-full">
+                                    <span>args_json</span>
+                                    <textarea v-model="mcpForm.args_json" rows="4" placeholder='例如：["{asset_dir}\\server.py"]'></textarea>
+                                </label>
+
+                                <label class="mcp-field mcp-field-full">
+                                    <span>env_json</span>
+                                    <textarea v-model="mcpForm.env_json" rows="4" placeholder='例如：{"PYTHONUTF8":"1"}'></textarea>
+                                </label>
+
+                                <div class="mcp-hint mcp-field-full">
+                                    可用占位符：`{asset_dir}`、`{asset_path}`、`{config_name}`、`{config_id}`。
+                                    上传 zip 时通常使用 `{asset_dir}`；上传单文件时通常使用 `{asset_path}`。
+                                </div>
+                            </template>
+
+                            <template v-else>
+                                <label class="mcp-field mcp-field-full">
+                                    <span>URL</span>
+                                    <input v-model="mcpForm.url" type="text" placeholder="例如：https://example.com/mcp" />
+                                </label>
+
+                                <label class="mcp-field mcp-field-full">
+                                    <span>headers_json</span>
+                                    <textarea v-model="mcpForm.headers_json" rows="5" placeholder='例如：{"Authorization":"Bearer xxx"}'></textarea>
+                                </label>
+                            </template>
+                        </div>
+
+                        <div class="mcp-form-actions">
+                            <button @click="submitMcpServer" class="btn-primary" :disabled="isMcpSubmitting">
+                                <i class="fas fa-floppy-disk"></i>
+                                {{ isMcpSubmitting ? '提交中...' : (mcpFormMode === 'create' ? '创建配置' : '保存修改') }}
+                            </button>
+                        </div>
+
+                        <div v-if="mcpFormMessage" class="skill-upload-message" :class="mcpFormStatusClass">
+                            {{ mcpFormMessage }}
+                        </div>
+                    </section>
+
+                    <section class="mcp-list-card">
+                        <div class="skills-section-header">
+                            <div>
+                                <h3><i class="fas fa-server"></i> MCP 配置列表</h3>
+                                <p>启用后的配置会被 agent 自动发现并并入运行时工具。</p>
+                            </div>
+                            <button @click="loadMcpServers" class="btn-secondary">
+                                <i class="fas fa-sync"></i> 刷新配置
+                            </button>
+                        </div>
+
+                        <div v-if="mcpLoading" class="loading-indicator">正在加载 MCP 配置...</div>
+                        <div v-else-if="mcpServers.length === 0" class="empty-documents">
+                            <i class="fas fa-plug-circle-xmark"></i>
+                            <p>暂无 MCP 配置</p>
+                        </div>
+                        <div v-else class="mcp-server-list">
+                            <div v-for="server in mcpServers" :key="server.id" class="mcp-server-item">
+                                <div class="mcp-server-header">
+                                    <div>
+                                        <div class="skill-name">{{ server.name }}</div>
+                                        <div class="skill-folder">
+                                            {{ server.transport }} · {{ server.enabled ? '已启用' : '已停用' }}
+                                            <span v-if="server.created_by"> · 创建人：{{ server.created_by }}</span>
+                                        </div>
+                                    </div>
+                                    <div class="mcp-server-actions">
+                                        <button @click="editMcpServer(server)" class="btn-secondary btn-small">
+                                            <i class="fas fa-pen"></i> 编辑
+                                        </button>
+                                        <button @click="deleteMcpServer(server)" class="danger-btn danger-btn-inline">
+                                            <i class="fas fa-trash"></i> 删除
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="skill-description">{{ server.description || '暂无描述' }}</div>
+                                <div class="mcp-meta-list">
+                                    <div v-if="server.transport === 'stdio'" class="mcp-meta-item">
+                                        <strong>command:</strong> {{ server.command || '-' }}
+                                    </div>
+                                    <div v-if="server.transport === 'stdio'" class="mcp-meta-item">
+                                        <strong>args:</strong> {{ JSON.stringify(server.args_json || []) }}
+                                    </div>
+                                    <div v-if="server.transport === 'stdio' && server.uploaded_filename" class="mcp-meta-item">
+                                        <strong>资源文件:</strong> {{ server.uploaded_filename }}
+                                    </div>
+                                    <div v-if="server.transport === 'http'" class="mcp-meta-item">
+                                        <strong>url:</strong> {{ server.url || '-' }}
+                                    </div>
+                                    <div v-if="server.transport === 'http' && Object.keys(server.headers_json || {}).length" class="mcp-meta-item">
+                                        <strong>headers:</strong> {{ JSON.stringify(server.headers_json || {}) }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
                 </div>
             </div>
 

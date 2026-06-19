@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import List
-from cache import cache
-from database import SessionLocal
-from models import ParentChunk
+from backend.app.core.cache import cache
+from backend.app.db.session import SessionLocal
+from backend.app.db.models import ParentChunk
 
 # 基于PostgreSQL + Redis的父级分块存储服务
 class ParentChunkStore:

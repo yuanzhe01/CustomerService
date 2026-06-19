@@ -83,26 +83,80 @@ Frontend Workbench
 
 ```text
 agent/
-├─ app.py                 # FastAPI 应用入口
-├─ api.py                 # 业务 API 路由
-├─ agent.py               # LangChain Agent 与会话存储逻辑
-├─ auth.py                # 登录、注册、JWT、角色权限
-├─ rag_pipeline.py        # RAG 编排流程
-├─ rag_utils.py           # 检索、重排、查询扩展等工具
-├─ embedding.py           # 本地向量模型与 BM25 稀疏向量
-├─ milvus_client.py       # Milvus 连接与检索封装
-├─ milvus_writer.py       # 文档向量写入
-├─ document_loader.py     # PDF/Word/Excel 文档解析与三级分块
-├─ parent_chunk_store.py  # 父级分块持久化
-├─ database.py            # PostgreSQL 连接
-├─ cache.py               # Redis 缓存封装
-├─ skill_loader.py        # Skill 扫描、解析、资源加载
-├─ tools.py               # 暴露给 Agent 的工具
-├─ upload_jobs.py         # 异步上传/删除任务状态管理
-├─ frontend/              # 前端工作台
-├─ skills/                # 外部 Skill 目录
-└─ docker-compose.yml     # Milvus 相关服务编排
+├─ app.py                         # 兼容启动入口，转发到 backend.app.main
+├─ backend/
+│  └─ app/
+│     ├─ main.py                  # FastAPI 应用组装与静态资源挂载
+│     ├─ schemas.py               # 全部 API 的 Pydantic 请求/响应模型
+│     ├─ tools.py                 # 暴露给 Agent 的 LangChain 工具集合
+│     ├─ api/
+│     │  └─ router.py             # HTTP 路由入口，聚合认证/会话/聊天/知识库/Skill/MCP 接口
+│     ├─ core/
+│     │  ├─ config.py             # 环境变量读取与全局配置
+│     │  ├─ security.py           # JWT、密码哈希、角色权限、依赖注入
+│     │  └─ cache.py              # Redis 缓存封装
+│     ├─ db/
+│     │  ├─ session.py            # SQLAlchemy Engine、SessionLocal、Base、init_db
+│     │  └─ models.py             # 用户、会话、消息、父级分块、MCP 配置等 ORM 模型
+│     ├─ services/
+│     │  └─ agent_service.py      # LangChain Agent、MCP 工具装配、会话存储逻辑
+│     ├─ rag/
+│     │  ├─ document_loader.py    # PDF/Word/Excel 文档解析与三级分块
+│     │  ├─ rag_pipeline.py       # LangGraph RAG 编排流程
+│     │  ├─ rag_utils.py          # 检索、重排、查询扩展、Auto-merging 等工具
+│     │  └─ parent_chunk_store.py # 父级分块在 PostgreSQL + Redis 中的持久化封装
+│     ├─ integrations/
+│     │  ├─ embedding.py          # 本地 dense embedding + BM25 sparse embedding
+│     │  ├─ milvus_client.py      # Milvus 连接、建表、查询、删除封装
+│     │  └─ milvus_writer.py      # 文档向量写入 Milvus
+│     ├─ jobs/
+│     │  └─ upload_jobs.py        # 上传/删除任务状态管理与进度跟踪
+│     └─ skills/
+│        └─ skill_loader.py       # Skill 扫描、frontmatter 解析、资源加载
+├─ frontend/
+│  ├─ index.html                  # 工作台页面骨架
+│  ├─ script.js                   # 前端交互逻辑、接口调用、状态管理
+│  ├─ style.css                   # 页面样式
+│  └─ favicon.ico                 # 站点图标
+├─ skills/                        # 外部 Skill 根目录，每个子目录一个技能包
+├─ .env                           # 本地开发环境变量
+├─ .env.example                   # 环境变量示例
+├─ docker-compose.yml             # 本地依赖服务编排
+└─ README.md                      # 项目说明文档
 ```
+
+### 文件作用说明
+
+- `app.py`：保留原有启动方式，内部转发到 `backend.app.main`，避免重构后本地启动命令失效。
+- `backend/app/main.py`：创建 FastAPI 应用、注册路由、初始化数据库、挂载 `frontend/` 静态页面。
+- `backend/app/api/router.py`：集中定义所有 HTTP 接口，是前端调用后端能力的统一入口。
+- `backend/app/core/config.py`：读取 `.env` 中的数据库、Redis、Milvus、模型与服务端口等配置。
+- `backend/app/core/security.py`：封装登录认证、JWT 生成校验、管理员校验和数据库依赖。
+- `backend/app/core/cache.py`：封装 Redis 读写，给会话缓存和父级分块缓存复用。
+- `backend/app/db/session.py`：维护 SQLAlchemy 连接、会话工厂和 `init_db()` 初始化逻辑。
+- `backend/app/db/models.py`：定义 `User`、`ChatSession`、`ChatMessage`、`ParentChunk`、`MCPServerConfig` 等表结构。
+- `backend/app/schemas.py`：定义认证、会话、聊天、文档、Skill、MCP 等接口的数据结构。
+- `backend/app/services/agent_service.py`：负责 Agent 构建、工具来源标记、会话存储、聊天与流式聊天执行。
+- `backend/app/tools.py`：定义 `search_knowledge_base`、`list_skills`、`load_skill` 等可供 Agent 调用的工具。
+- `backend/app/rag/document_loader.py`：负责业务文档加载、清洗和三级分块。
+- `backend/app/rag/rag_pipeline.py`：编排检索、评估、查询重写、生成答案等 RAG 工作流节点。
+- `backend/app/rag/rag_utils.py`：实现检索召回、Rerank、Step-back、HyDE、Auto-merging 等核心算法逻辑。
+- `backend/app/rag/parent_chunk_store.py`：将父级分块写入 PostgreSQL，并通过 Redis 做热点缓存。
+- `backend/app/integrations/embedding.py`：加载本地 `bge-m3` 模型，维护 dense/sparse embedding 与 BM25 状态。
+- `backend/app/integrations/milvus_client.py`：封装 Milvus 的集合初始化、向量插入、混合检索与删除操作。
+- `backend/app/integrations/milvus_writer.py`：把文档批量向量化后写入 Milvus。
+- `backend/app/jobs/upload_jobs.py`：维护上传与删除任务的进度、状态与步骤信息，供前端轮询展示。
+- `backend/app/skills/skill_loader.py`：扫描 `skills/` 目录、解析 `SKILL.md` frontmatter，并按需读取资源文件。
+- `frontend/index.html`：管理后台页面结构，承载登录、聊天、知识库和 Skill 管理视图。
+- `frontend/script.js`：负责前端事件绑定、SSE 流式处理、会话切换与后台接口调用。
+- `frontend/style.css`：负责工作台布局、组件样式与交互状态样式。
+- `frontend/favicon.ico`：浏览器页签图标资源。
+- `skills/`：外部技能包目录，每个技能由 `SKILL.md` 和若干 `references/`、`assets/`、`scripts/` 资源组成。
+- `.env`：本地实际运行配置，通常不提交到仓库。
+- `.env.example`：给新环境初始化用的配置模板。
+- `docker-compose.yml`：用于本地拉起 Milvus 等依赖服务。
+- `README.md`：项目使用说明、架构说明和目录说明。
+- `backend/`、`backend/app/` 及其子目录下的 `__init__.py`：Python 包标记文件，用于支持包内导入与模块组织。
 
 ## 核心能力说明
 

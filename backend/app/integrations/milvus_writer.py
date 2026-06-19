@@ -1,5 +1,5 @@
-from embedding import EmbeddingService, embedding_service as _default_embedding_service
-from milvus_client import MilvusManager
+from backend.app.integrations.embedding import EmbeddingService, embedding_service as _default_embedding_service
+from backend.app.integrations.milvus_client import MilvusManager
 
 # 文档向量化并写入Milvus服务
 class MilvusWriter:

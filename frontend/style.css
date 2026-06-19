@@ -1382,6 +1382,140 @@ textarea::placeholder {
     gap: 14px;
 }
 
+.mcp-layout {
+    display: grid;
+    grid-template-columns: minmax(360px, 440px) minmax(0, 1fr);
+    gap: 20px;
+}
+
+.mcp-form-card,
+.mcp-list-card {
+    padding: 24px;
+    border-radius: 24px;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(129, 152, 179, 0.14);
+    box-shadow: var(--shadow-soft);
+}
+
+.mcp-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.mcp-field {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.mcp-field span {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: #18375c;
+}
+
+.mcp-field input,
+.mcp-field select,
+.mcp-field textarea {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(129, 152, 179, 0.22);
+    background: #f8fbff;
+    color: var(--text-color);
+    font: inherit;
+    resize: vertical;
+}
+
+.mcp-field-full {
+    grid-column: 1 / -1;
+}
+
+.mcp-file-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.selected-file-inline {
+    font-size: 0.84rem;
+    color: var(--text-light);
+}
+
+.mcp-hint {
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: rgba(47, 125, 246, 0.06);
+    border: 1px solid rgba(47, 125, 246, 0.1);
+    color: var(--text-light);
+    font-size: 0.84rem;
+    line-height: 1.7;
+}
+
+.mcp-form-actions {
+    margin-top: 18px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.mcp-server-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.mcp-server-item {
+    padding: 18px;
+    border-radius: 18px;
+    background: #f8fbff;
+    border: 1px solid rgba(47, 125, 246, 0.1);
+}
+
+.mcp-server-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+}
+
+.mcp-server-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.btn-small {
+    margin-bottom: 0;
+    padding: 8px 12px;
+    font-size: 0.84rem;
+}
+
+.danger-btn-inline {
+    padding: 8px 12px;
+    border-radius: 12px;
+}
+
+.mcp-meta-list {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.mcp-meta-item {
+    color: var(--text-light);
+    font-size: 0.86rem;
+    line-height: 1.6;
+    word-break: break-all;
+}
+
+.mcp-meta-item strong {
+    color: var(--text-color);
+}
+
 .skill-item {
     padding: 18px;
     border-radius: 18px;
@@ -1801,6 +1935,10 @@ textarea::placeholder {
     .history-sidebar {
         width: min(100%, 360px);
     }
+
+    .mcp-layout {
+        grid-template-columns: 1fr;
+    }
 }
 
 @media (max-width: 640px) {
@@ -1822,5 +1960,14 @@ textarea::placeholder {
 
     .input-toolbar {
         display: none;
+    }
+
+    .mcp-form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .mcp-server-header,
+    .skills-section-header {
+        flex-direction: column;
     }
 }

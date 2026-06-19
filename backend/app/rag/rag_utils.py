@@ -5,12 +5,12 @@ import requests
 import logging
 import traceback
 
-from milvus_client import MilvusManager
-from embedding import embedding_service as _embedding_service
-from parent_chunk_store import ParentChunkStore
+from backend.app.integrations.milvus_client import MilvusManager
+from backend.app.integrations.embedding import embedding_service as _embedding_service
+from backend.app.rag.parent_chunk_store import ParentChunkStore
 from langchain.chat_models import init_chat_model
 from openai import OpenAI
-from settings import (
+from backend.app.core.config import (
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MODEL,

@@ -2,7 +2,7 @@ import json
 import logging
 from typing import Any, Optional
 import redis
-from settings import REDIS_DEFAULT_TTL, REDIS_KEY_PREFIX, REDIS_URL
+from backend.app.core.config import REDIS_DEFAULT_TTL, REDIS_KEY_PREFIX, REDIS_URL
 
 
 logger = logging.getLogger(__name__)

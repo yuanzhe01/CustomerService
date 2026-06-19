@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-from settings import DATABASE_URL
+from backend.app.core.config import DATABASE_URL
 
 engine = create_engine(
     DATABASE_URL,
@@ -12,6 +12,6 @@ Base = declarative_base()
 
 def init_db() -> None:
     # Delayed import to avoid circular dependency.
-    import models  # noqa: F401
+    from backend.app.db import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

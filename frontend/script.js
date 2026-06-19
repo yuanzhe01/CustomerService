@@ -16,13 +16,32 @@ createApp({
             documentsLoading: false,
             skills: [],
             skillsLoading: false,
+            mcpServers: [],
+            mcpLoading: false,
             selectedFile: null,
             selectedSkillFile: null,
+            selectedMcpFile: null,
             isUploading: false,
             isSkillUploading: false,
+            isMcpSubmitting: false,
             uploadProgress: '',
             skillUploadMessage: '',
             skillUploadStatus: '',
+            mcpFormMode: 'create',
+            mcpFormMessage: '',
+            mcpFormStatus: '',
+            mcpForm: {
+                id: null,
+                name: '',
+                description: '',
+                transport: 'stdio',
+                enabled: true,
+                command: 'python',
+                args_json: '[]',
+                env_json: '{}',
+                url: '',
+                headers_json: '{}'
+            },
             uploadSteps: [],
             uploadProgressCollapsed: false,
             activeUploadJobId: '',
@@ -52,6 +71,11 @@ createApp({
         skillUploadStatusClass() {
             if (this.skillUploadStatus === 'success') return 'is-success';
             if (this.skillUploadStatus === 'error') return 'is-error';
+            return 'is-loading';
+        },
+        mcpFormStatusClass() {
+            if (this.mcpFormStatus === 'success') return 'is-success';
+            if (this.mcpFormStatus === 'error') return 'is-error';
             return 'is-loading';
         }
     },
@@ -174,9 +198,11 @@ createApp({
             this.sessions = [];
             this.documents = [];
             this.skills = [];
+            this.mcpServers = [];
             this.activeNav = 'newChat';
             this.showHistorySidebar = false;
             localStorage.removeItem('accessToken');
+            this.resetMcpForm();
         },
 
         handleCompositionStart() {
@@ -444,6 +470,16 @@ createApp({
             this.loadSkills();
         },
 
+        handleMcpCenter() {
+            if (!this.isAdmin) {
+                alert('仅管理员可访问MCP管理，请使用管理员账号登录或在注册时填写正确的邀请码。');
+                return;
+            }
+            this.activeNav = 'mcp';
+            this.showHistorySidebar = false;
+            this.loadMcpServers();
+        },
+
         async loadSkills() {
             this.skillsLoading = true;
             try {
@@ -458,6 +494,144 @@ createApp({
                 alert('加载Skill列表失败：' + error.message);
             } finally {
                 this.skillsLoading = false;
+            }
+        },
+
+        resetMcpForm(server = null) {
+            if (server) {
+                this.mcpFormMode = 'edit';
+                this.mcpForm = {
+                    id: server.id,
+                    name: server.name || '',
+                    description: server.description || '',
+                    transport: server.transport || 'stdio',
+                    enabled: Boolean(server.enabled),
+                    command: server.command || 'python',
+                    args_json: JSON.stringify(server.args_json || [], null, 2),
+                    env_json: JSON.stringify(server.env_json || {}, null, 2),
+                    url: server.url || '',
+                    headers_json: JSON.stringify(server.headers_json || {}, null, 2)
+                };
+            } else {
+                this.mcpFormMode = 'create';
+                this.mcpForm = {
+                    id: null,
+                    name: '',
+                    description: '',
+                    transport: 'stdio',
+                    enabled: true,
+                    command: 'python',
+                    args_json: '[]',
+                    env_json: '{}',
+                    url: '',
+                    headers_json: '{}'
+                };
+            }
+            this.selectedMcpFile = null;
+            this.mcpFormMessage = '';
+            this.mcpFormStatus = '';
+            if (this.$refs.mcpFileInput) {
+                this.$refs.mcpFileInput.value = '';
+            }
+        },
+
+        async loadMcpServers() {
+            this.mcpLoading = true;
+            try {
+                const response = await this.authFetch('/admin/mcp-servers');
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({}));
+                    throw new Error(data.detail || 'Failed to load MCP servers');
+                }
+                const data = await response.json();
+                this.mcpServers = Array.isArray(data.servers) ? data.servers : [];
+            } catch (error) {
+                alert('加载MCP配置失败：' + error.message);
+            } finally {
+                this.mcpLoading = false;
+            }
+        },
+
+        handleMcpFileSelect(event) {
+            const files = event.target.files;
+            this.selectedMcpFile = files && files.length > 0 ? files[0] : null;
+        },
+
+        editMcpServer(server) {
+            this.resetMcpForm(server);
+        },
+
+        buildMcpFormData() {
+            const formData = new FormData();
+            formData.append('name', this.mcpForm.name.trim());
+            formData.append('description', this.mcpForm.description || '');
+            formData.append('transport', this.mcpForm.transport);
+            formData.append('enabled', String(Boolean(this.mcpForm.enabled)));
+            formData.append('command', this.mcpForm.transport === 'stdio' ? (this.mcpForm.command || '') : '');
+            formData.append('args_json', this.mcpForm.transport === 'stdio' ? (this.mcpForm.args_json || '[]') : '[]');
+            formData.append('env_json', this.mcpForm.transport === 'stdio' ? (this.mcpForm.env_json || '{}') : '{}');
+            formData.append('url', this.mcpForm.transport === 'http' ? (this.mcpForm.url || '') : '');
+            formData.append('headers_json', this.mcpForm.transport === 'http' ? (this.mcpForm.headers_json || '{}') : '{}');
+            if (this.selectedMcpFile) {
+                formData.append('asset_file', this.selectedMcpFile);
+            }
+            return formData;
+        },
+
+        async submitMcpServer() {
+            if (this.isMcpSubmitting) return;
+            if (!this.mcpForm.name.trim()) {
+                alert('请先填写配置名称');
+                return;
+            }
+
+            this.isMcpSubmitting = true;
+            this.mcpFormStatus = 'loading';
+            this.mcpFormMessage = this.mcpFormMode === 'create' ? '正在创建MCP配置...' : '正在更新MCP配置...';
+            try {
+                const isEdit = this.mcpFormMode === 'edit' && this.mcpForm.id;
+                const url = isEdit
+                    ? `/admin/mcp-servers/${encodeURIComponent(this.mcpForm.id)}`
+                    : '/admin/mcp-servers';
+                const response = await this.authFetch(url, {
+                    method: isEdit ? 'PUT' : 'POST',
+                    body: this.buildMcpFormData()
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.detail || '保存MCP配置失败');
+                }
+
+                this.mcpFormStatus = 'success';
+                this.mcpFormMessage = data.message || '保存成功';
+                await this.loadMcpServers();
+                this.resetMcpForm();
+            } catch (error) {
+                this.mcpFormStatus = 'error';
+                this.mcpFormMessage = '保存失败：' + error.message;
+            } finally {
+                this.isMcpSubmitting = false;
+            }
+        },
+
+        async deleteMcpServer(server) {
+            if (!confirm(`确定要删除 MCP 配置 "${server.name}" 吗？`)) {
+                return;
+            }
+            try {
+                const response = await this.authFetch(`/admin/mcp-servers/${encodeURIComponent(server.id)}`, {
+                    method: 'DELETE'
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.detail || '删除MCP配置失败');
+                }
+                if (this.mcpForm.id === server.id) {
+                    this.resetMcpForm();
+                }
+                await this.loadMcpServers();
+            } catch (error) {
+                alert('删除MCP配置失败：' + error.message);
             }
         },
 

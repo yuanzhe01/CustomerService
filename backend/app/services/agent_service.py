@@ -1,12 +1,15 @@
 import json
+import os
 import asyncio
+import logging
+from copy import copy
 from functools import lru_cache
 
 from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
-
-from tools import (
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from backend.app.tools import (
     search_knowledge_base,
     list_skills,
     load_skill,
@@ -19,15 +22,99 @@ from tools import (
     set_rag_step_queue,
 )
 from datetime import datetime
-from cache import cache
-from database import SessionLocal
-from models import User, ChatSession, ChatMessage
-from skill_loader import get_skill_index_text
-from settings import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from backend.app.core.cache import cache
+from backend.app.db.session import SessionLocal
+from backend.app.db.models import User, ChatSession, ChatMessage, MCPServerConfig
+from backend.app.skills.skill_loader import get_skill_index_text
+from backend.app.core.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
 API_KEY = LLM_API_KEY
 BASE_URL = LLM_BASE_URL
 MODEL = LLM_MODEL
+logger = logging.getLogger(__name__)
+
+_MCP_CLIENT = None
+_MCP_TOOLS_CACHE = None
+_MCP_CLIENT_LOCK = None
+LOCAL_TOOL_SOURCE_LABEL = "LOCAL"
+MCP_TOOL_SOURCE_LABEL = "MCP"
+
+# 尽量复制一份工具对象，避免后面对工具打标签时直接改到原对象
+def _clone_tool(tool):
+    if hasattr(tool, "model_copy"):
+        return tool.model_copy(deep=True)
+    if hasattr(tool, "copy"):
+        try:
+            return tool.copy(deep=True)
+        except TypeError:
+            return tool.copy()
+    return copy(tool)
+
+# 把工具的描述文本统一补上来源标签：[LOCAL]或[MCP]
+def _format_tool_description_with_source(description: str | None, source_label: str) -> str:
+    prefix = f"[{source_label}]"
+    normalized = str(description or "").strip()
+    if normalized.startswith(prefix):
+        return normalized
+    if not normalized:
+        return f"{prefix} No description provided."
+    return f"{prefix} {normalized}"
+
+# 给一个运行时工具打上“来源标签”，让后面的智能体能区分它是本地工具还是MCP工具
+def _tag_runtime_tool(tool, source_label: str):
+    tagged_tool = _clone_tool(tool)
+
+    try:
+        tagged_tool.description = _format_tool_description_with_source(
+            getattr(tagged_tool, "description", ""),
+            source_label,
+        )
+    except Exception:
+        logger.warning("无法为工具 %s 写入来源标签描述。", getattr(tool, "name", repr(tool)))
+
+    metadata = getattr(tagged_tool, "metadata", None)
+    tagged_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    tagged_metadata["tool_source"] = source_label
+    try:
+        tagged_tool.metadata = tagged_metadata
+    except Exception:
+        logger.warning("无法为工具 %s 写入来源标签元数据。", getattr(tool, "name", repr(tool)))
+
+    return tagged_tool
+
+# 从一个工具对象里判断它的来源标签，返回"LOCAL"或“MCP”
+def _get_tool_source_label(tool) -> str:
+    metadata = getattr(tool, "metadata", None)
+    if isinstance(metadata, dict):
+        source_label = str(metadata.get("tool_source", "")).strip().upper()   # 取出tool_source，保证是字符串，去掉空格并转成大写
+        if source_label in {LOCAL_TOOL_SOURCE_LABEL, MCP_TOOL_SOURCE_LABEL}:
+            return source_label
+
+    description = str(getattr(tool, "description", "") or "")
+    if description.startswith(f"[{MCP_TOOL_SOURCE_LABEL}]"):
+        return MCP_TOOL_SOURCE_LABEL
+    return LOCAL_TOOL_SOURCE_LABEL
+
+# 把当前运行时工具列表按来源分组，整理成一段可直接塞进系统提示词的文本
+def _format_runtime_tool_source_text(runtime_tools: list | None = None) -> str:
+    local_tool_names = []   # 存本地工具名
+    mcp_tool_names = []     # 存MCP工具名
+
+    for tool in runtime_tools or []:
+        tool_name = getattr(tool, "name", None) or repr(tool)
+        if _get_tool_source_label(tool) == MCP_TOOL_SOURCE_LABEL:
+            mcp_tool_names.append(str(tool_name))
+        else:
+            local_tool_names.append(str(tool_name))
+
+    local_text = ", ".join(local_tool_names) if local_tool_names else "无"
+    mcp_text = ", ".join(mcp_tool_names) if mcp_tool_names else "无"
+    return (
+        "【运行时工具来源】\n"
+        f"- 本地内置工具 [LOCAL]: {local_text}\n"
+        f"- 外部 MCP 工具 [MCP]: {mcp_text}\n"
+        "工具描述里会带有 [LOCAL] 或 [MCP] 标签，回答工具清单类问题时必须严格按来源标签筛选。\n"
+    )
 
 
 def _format_skill_context_text(skill_context: dict | None) -> str:
@@ -47,17 +134,18 @@ def _format_skill_context_text(skill_context: dict | None) -> str:
     )
 
 
-def build_agent_system_prompt(skill_context: dict | None = None) -> str:
+def build_agent_system_prompt(skill_context: dict | None = None, runtime_tools: list | None = None) -> str:
     skill_index_text = get_skill_index_text()
     return (
         "你是一个专业、友好、稳健的 AI 智能客服。\n\n"
-        "你的主要职责是理解用户诉求、补齐关键信息、提供清晰建议，并在不确定时使用知识库或 skill 资源提高准确性。\n\n"
+        "你的主要职责是理解用户诉求、补齐关键信息、提供清晰建议，并在不确定时使用知识库、skill 资源或外部工具提高准确性。\n\n"
         "【可用 Skill 索引】\n"
         "以下 skill 可按需加载完整内容。你也可以先调用 `list_skills` 查看当前可用 skill。请先根据 skill 的 name 和 description 判断是否匹配用户任务；"
         "如果匹配，请调用 `load_skill` 读取主 SKILL.md。若正文要求进一步读取 references、assets 等附带文档，"
         "请先调用 `list_skill_resources` 查看，再用 `load_skill_resource` 按需读取。\n"
         f"{skill_index_text}\n\n"
         f"{_format_skill_context_text(skill_context)}\n"
+        f"{_format_runtime_tool_source_text(runtime_tools)}\n"
         "【工具使用规则】\n"
         "1. 你可以先调用 `list_skills` 查看 skill 清单，再决定是否加载具体 skill。\n"
         "2. 用户任务符合某个 skill 的 description 时，再调用 `load_skill`。\n"
@@ -65,8 +153,11 @@ def build_agent_system_prompt(skill_context: dict | None = None) -> str:
         "4. 如果某个 skill 已经在当前会话中激活，且资源足够支撑回答，优先复用 skill_context。\n"
         "5. 当答案依赖事实、规则、产品说明或知识库证据时，可调用 `search_knowledge_base`。\n"
         "6. 每轮对话最多调用一次 `search_knowledge_base`；拿到结果后直接给出最终回答。\n"
-        "7. 如果证据不足，不要编造事实，要明确说明限制并给出下一步建议。\n"
-        "8. 如果当前系统没有真实执行业务的工具，就不能假装已经完成退款、发货、建单或人工升级。\n"
+        "7. 运行时工具分为 [LOCAL] 本地内置工具 与 [MCP] 外部 MCP 工具；必须根据工具描述中的来源标签区分，不要混淆。\n"
+        "8. 当用户询问“MCP 工具、MCP 能力、外部工具”时，只能回答带 [MCP] 标签的工具；当用户询问本地工具、知识库工具、skill 工具时，只能回答带 [LOCAL] 标签的工具。\n"
+        "9. 当任务需要调用外部系统能力时，只选择带 [MCP] 标签的工具；当任务需要知识库或 skill 能力时，优先选择带 [LOCAL] 标签的工具。\n"
+        "10. 如果证据不足，不要编造事实，要明确说明限制并给出下一步建议。\n"
+        "11. 如果当前系统没有真实执行业务的工具，就不能假装已经完成退款、发货、建单或人工升级。\n"
     )
 
 # 这个类用来管理对话的存储，包括将对话保存到数据库、从数据库加载对话、列出用户的会话列表，以及删除会话等功能。
@@ -321,9 +412,191 @@ LOCAL_TOOLS = [
     load_skill_resource,
 ]
 
+# 按需创建一个全局异步锁，保证并发情况下，MCP client和工具缓存只被安全初始化一次
+def _get_mcp_client_lock() -> asyncio.Lock:
+    global _MCP_CLIENT_LOCK
+    if _MCP_CLIENT_LOCK is None:
+        _MCP_CLIENT_LOCK = asyncio.Lock()
+    return _MCP_CLIENT_LOCK
+
+# 把"环境变量里的JSON字符串"读出来，解析成Python对象，并且校验类型对不对
+def _load_json_env(name: str, expected_type: type, default):
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+
+    # 把JSON字符串解析成Python对象，如果字符串不是合法JSON，就捕获异常
+    try:
+        parsed = json.loads(raw_value)   
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"环境变量 {name} 不是合法 JSON: {exc}") from exc
+
+    if not isinstance(parsed, expected_type):
+        raise RuntimeError(f"环境变量 {name} 必须是 {expected_type.__name__} 类型的 JSON")
+    return parsed
+
+# 运行时缓存失效函数
+def invalidate_mcp_runtime_cache():
+    global _MCP_CLIENT, _MCP_TOOLS_CACHE
+    _MCP_CLIENT = None
+    _MCP_TOOLS_CACHE = None
+
+# 把MCP配置里的“占位符字符串”替换成当前这条配置对应的真实值
+def _render_mcp_template(value: str, config: MCPServerConfig) -> str:
+    rendered = str(value or "")
+    replacements = {
+        "{asset_dir}": config.uploaded_asset_dir or "",
+        "{asset_path}": config.uploaded_asset_path or "",
+        "{config_name}": config.name or "",
+        "{config_id}": str(config.id),
+    }
+    # 依次遍历每个占位符，把字符串里的占位符替换成真实值
+    for placeholder, replacement in replacements.items():
+        rendered = rendered.replace(placeholder, replacement)
+    return rendered
+
+# 把数据库里“管理员配置好的MCP Server记录”读出来，转换成MultiServerMCPClient能直接使用的连接配置字典
+def _build_db_mcp_connections() -> dict[str, dict]:
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(MCPServerConfig)
+            .filter(MCPServerConfig.enabled == True)
+            .order_by(MCPServerConfig.id.asc())
+            .all()
+        )
+        connections: dict[str, dict] = {}   # 初始化结果字典
+        for row in rows:
+            connection_key = f"db_{row.id}_{row.transport}"
+            if row.transport == "stdio":
+                command = _render_mcp_template(row.command, row).strip()
+                if not command:
+                    logger.warning("MCP配置 %s 缺少 command，已跳过。", row.name)
+                    continue
+
+                args_json = row.args_json if isinstance(row.args_json, list) else []
+                env_json = row.env_json if isinstance(row.env_json, dict) else {}
+                connection = {
+                    "transport": "stdio",
+                    "command": command,
+                    "args": [_render_mcp_template(str(item), row) for item in args_json],
+                }
+                if env_json:
+                    connection["env"] = {
+                        str(key): _render_mcp_template(str(value), row)
+                        for key, value in env_json.items()
+                    }
+                connections[connection_key] = connection
+            elif row.transport == "http":
+                url = (row.url or "").strip()
+                if not url:
+                    logger.warning("MCP配置 %s 缺少 url，已跳过。", row.name)
+                    continue
+                headers_json = row.headers_json if isinstance(row.headers_json, dict) else {}
+                connection = {
+                    "transport": "http",
+                    "url": url,
+                }
+                if headers_json:
+                    connection["headers"] = {str(key): str(value) for key, value in headers_json.items()}
+                connections[connection_key] = connection
+        return connections
+    finally:
+        db.close()
+
+# 从环境变量里读取MCP配置，拼出MultiServerMCPClient需要的连接字典
+def _build_mcp_connections() -> dict[str, dict]:
+    connections = _build_db_mcp_connections()
+
+    # 构建stdio连接
+    stdio_command = os.getenv("MCP_STDIO_COMMAND", "").strip()
+    if stdio_command:
+        stdio_connection = {
+            "transport": "stdio",
+            "command": stdio_command,
+            "args": _load_json_env("MCP_STDIO_ARGS", list, []),
+        }
+        stdio_env = _load_json_env("MCP_STDIO_ENV", dict, {})
+        if stdio_env:
+            stdio_connection["env"] = {str(key): str(value) for key, value in stdio_env.items()}
+        connections.setdefault("env_local_stdio", stdio_connection)
+
+    # 构建http连接
+    http_url = os.getenv("MCP_HTTP_URL", "").strip()   # 查看有没有配置远程MCP的URL
+    if http_url:
+        http_connection = {
+            "transport": "http",
+            "url": http_url,
+        }
+        headers = _load_json_env("MCP_HTTP_HEADERS", dict, {})   # 读取自定义请求头
+        bearer_token = os.getenv("MCP_HTTP_BEARER_TOKEN", "").strip()   # 读取Bearer Token
+        if bearer_token:
+            headers.setdefault("Authorization", f"Bearer {bearer_token}")   # 如果headers里已经有Authorization，就不覆盖；如果没有才自动加上
+        if headers:
+            http_connection["headers"] = {str(key): str(value) for key, value in headers.items()}
+        connections.setdefault("env_remote_http", http_connection)
+
+    return connections
+
+# 按需获取一个全局唯一的MCP client，如果还没创建就安全地创建一次
+async def _get_mcp_client():
+    connections = _build_mcp_connections()
+    if not connections:
+        return None
+
+    # 看全局缓存中有没有现成的client，有直接复用，不再重新创建
+    global _MCP_CLIENT
+    if _MCP_CLIENT is not None:
+        return _MCP_CLIENT
+
+    # 加锁，只有一个协程能进入创建逻辑
+    async with _get_mcp_client_lock():
+        if _MCP_CLIENT is None:
+            _MCP_CLIENT = MultiServerMCPClient(connections)
+            logger.info("已初始化MCP客户端，连接数: %s", len(connections))
+    return _MCP_CLIENT
+
+# 获取MCP工具列表，并且把结果缓存起来，避免每次对话都重新去远程拉工具定义
+async def _get_mcp_tools() -> list:
+    # 先看缓存有没有值，如果之前已经加载过工具，就直接返回
+    global _MCP_TOOLS_CACHE
+    if _MCP_TOOLS_CACHE is not None:
+        return list(_MCP_TOOLS_CACHE)
+
+    client = await _get_mcp_client()
+    if client is None:
+        return []
+
+    async with _get_mcp_client_lock():
+        if _MCP_TOOLS_CACHE is None:
+            try:
+                _MCP_TOOLS_CACHE = await client.get_tools()
+                logger.info("已加载 %s 个 MCP 工具。", len(_MCP_TOOLS_CACHE))
+            except Exception:
+                logger.exception("加载 MCP 工具失败，将回退到仅使用本地工具。")
+                _MCP_TOOLS_CACHE = []
+    return list(_MCP_TOOLS_CACHE)
+
+
+def _merge_runtime_tools(local_tools: list, remote_tools: list) -> list:
+    merged = []
+    seen_names = set()
+
+    for tool in [*local_tools, *remote_tools]:
+        tool_name = getattr(tool, "name", None) or repr(tool)
+        if tool_name in seen_names:
+            logger.warning("检测到重名工具 %s，已跳过后续重复项。", tool_name)
+            continue
+        seen_names.add(tool_name)
+        merged.append(tool)
+
+    return merged
+
 
 async def build_runtime_tools() -> list:
-    return list(LOCAL_TOOLS)
+    local_tools = [_tag_runtime_tool(tool, LOCAL_TOOL_SOURCE_LABEL) for tool in LOCAL_TOOLS]
+    mcp_tools = [_tag_runtime_tool(tool, MCP_TOOL_SOURCE_LABEL) for tool in await _get_mcp_tools()]
+    return _merge_runtime_tools(local_tools, mcp_tools)
 
 
 async def create_agent_instance(skill_context: dict | None = None):
@@ -332,7 +605,7 @@ async def create_agent_instance(skill_context: dict | None = None):
     agent = create_agent(
         model = model,
         tools = runtime_tools,
-        system_prompt = build_agent_system_prompt(skill_context),
+        system_prompt = build_agent_system_prompt(skill_context, runtime_tools),
     )
 
     return agent, model

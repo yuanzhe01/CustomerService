@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 
-SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SKILLS_DIR = PROJECT_ROOT / "skills"
 TEXT_RESOURCE_EXTENSIONS = {".md", ".markdown", ".txt", ".json", ".yaml", ".yml", ".py", ".js", ".ts", ".sh"}
 CONVENTIONAL_RESOURCE_DIRS = {"references", "assets", "scripts"}
 
