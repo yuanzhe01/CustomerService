@@ -15,7 +15,12 @@ from backend.app.schemas import (
     SessionListResponse,
     SessionMessagesResponse,
 )
-from backend.app.services.agent_service import chat_with_agent, chat_with_agent_stream, storage
+from backend.app.services.agent_service import (
+    begin_chat_request,
+    chat_with_agent,
+    chat_with_agent_stream,
+    storage,
+)
 
 router = APIRouter()
 
@@ -67,7 +72,25 @@ async def delete_session(session_id: str, current_user: User = Depends(get_curre
 async def chat_endpoint(request: ChatRequest, current_user: User = Depends(get_current_user)):
     try:
         session_id = request.session_id or "default_session"
-        resp = await chat_with_agent(request.message, current_user.username, session_id)
+        lease = begin_chat_request(
+            current_user.username,
+            session_id,
+            request.message,
+            request.idempotency_key,
+        )
+        if lease.action == "conflict":
+            raise HTTPException(status_code=409, detail=lease.error_message)
+        if lease.action == "replay":
+            return ChatResponse(response=lease.response_content, rag_trace=lease.rag_trace)
+        if lease.action == "ignore":
+            raise HTTPException(status_code=409, detail="同一消息正在处理中，已忽略重复提交。")
+
+        resp = await chat_with_agent(
+            request.message,
+            current_user.username,
+            session_id,
+            request_record_id=lease.record_id,
+        )
         if isinstance(resp, dict):
             return ChatResponse(**resp)
         return ChatResponse(response=resp)
@@ -97,7 +120,34 @@ async def chat_stream_endpoint(request: ChatRequest, current_user: User = Depend
     async def event_generator():
         try:
             session_id = request.session_id or "default_session"
-            async for chunk in chat_with_agent_stream(request.message, current_user.username, session_id):
+            lease = begin_chat_request(
+                current_user.username,
+                session_id,
+                request.message,
+                request.idempotency_key,
+            )
+            if lease.action == "conflict":
+                yield f"data: {json.dumps({'type': 'error', 'content': lease.error_message})}\n\n"
+                return
+            if lease.action == "replay":
+                replay_event = {"type": "content", "content": lease.response_content}
+                yield f"data: {json.dumps(replay_event)}\n\n"
+                trace_event = {"type": "trace", "rag_trace": lease.rag_trace}
+                yield f"data: {json.dumps(trace_event)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            if lease.action == "ignore":
+                ignored_event = {"type": "ignored", "content": "同一消息正在处理中，已忽略重复提交。"}
+                yield f"data: {json.dumps(ignored_event)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            async for chunk in chat_with_agent_stream(
+                request.message,
+                current_user.username,
+                session_id,
+                request_record_id=lease.record_id,
+            ):
                 yield chunk
         except Exception as exc:
             error_data = {"type": "error", "content": str(exc)}

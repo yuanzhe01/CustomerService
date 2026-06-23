@@ -8,6 +8,7 @@ createApp({
             isLoading: false,
             activeNav: 'newChat',
             abortController: null,
+            streamAbortReason: '',
             sessionId: 'session_' + Date.now(),
             sessions: [],
             showHistorySidebar: false,
@@ -81,6 +82,7 @@ createApp({
     },
     async mounted() {
         this.configureMarked();
+        window.addEventListener('beforeunload', this.handlePageUnload);
         if (this.token) {
             try {
                 await this.fetchMe();
@@ -90,6 +92,8 @@ createApp({
         }
     },
     beforeUnmount() {
+        window.removeEventListener('beforeunload', this.handlePageUnload);
+        this.cancelActiveStream('page_unload');
         this.stopUploadJobPolling();
         this.stopAllDeleteJobPolling();
         Object.values(this.deleteRemoveTimers).forEach(timer => clearTimeout(timer));
@@ -192,6 +196,7 @@ createApp({
         },
 
         handleLogout() {
+            this.cancelActiveStream('logout');
             this.token = '';
             this.currentUser = null;
             this.messages = [];
@@ -221,9 +226,24 @@ createApp({
         },
 
         handleStop() {
-            if (this.abortController) {
-                this.abortController.abort();
+            this.cancelActiveStream('manual');
+        },
+
+        cancelActiveStream(reason = 'manual') {
+            if (!this.abortController) return;
+            this.streamAbortReason = reason;
+            this.abortController.abort();
+        },
+
+        handlePageUnload() {
+            this.cancelActiveStream('page_unload');
+        },
+
+        generateIdempotencyKey() {
+            if (window.crypto?.randomUUID) {
+                return `chat_${window.crypto.randomUUID()}`;
             }
+            return `chat_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
         },
 
         async handleSend() {
@@ -247,16 +267,18 @@ createApp({
             });
 
             this.isLoading = true;
-            this.messages.push({
+            const botMessage = {
                 text: '',
                 isUser: false,
                 isThinking: true,
                 ragTrace: null,
                 ragSteps: []
-            });
-            const botMsgIdx = this.messages.length - 1;
+            };
+            this.messages.push(botMessage);
 
+            this.streamAbortReason = '';
             this.abortController = new AbortController();
+            const idempotencyKey = this.generateIdempotencyKey();
 
             try {
                 const response = await this.authFetch('/chat/stream', {
@@ -264,7 +286,8 @@ createApp({
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         message: text,
-                        session_id: this.sessionId
+                        session_id: this.sessionId,
+                        idempotency_key: idempotencyKey
                     }),
                     signal: this.abortController.signal,
                 });
@@ -275,6 +298,7 @@ createApp({
                 const decoder = new TextDecoder();
 
                 let buffer = '';
+                let receivedDone = false;
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
@@ -288,24 +312,30 @@ createApp({
 
                         if (eventStr.startsWith('data: ')) {
                             const dataStr = eventStr.slice(6);
-                            if (dataStr === '[DONE]') continue;
+                            if (dataStr === '[DONE]') {
+                                receivedDone = true;
+                                continue;
+                            }
                             try {
                                 const data = JSON.parse(dataStr);
                                 if (data.type === 'content') {
-                                    if (this.messages[botMsgIdx].isThinking) {
-                                        this.messages[botMsgIdx].isThinking = false;
+                                    if (botMessage.isThinking) {
+                                        botMessage.isThinking = false;
                                     }
-                                    this.messages[botMsgIdx].text += data.content;
+                                    botMessage.text += data.content;
                                 } else if (data.type === 'trace') {
-                                    this.messages[botMsgIdx].ragTrace = data.rag_trace;
+                                    botMessage.ragTrace = data.rag_trace;
                                 } else if (data.type === 'rag_step') {
-                                    if (!this.messages[botMsgIdx].ragSteps) {
-                                        this.messages[botMsgIdx].ragSteps = [];
+                                    if (!botMessage.ragSteps) {
+                                        botMessage.ragSteps = [];
                                     }
-                                    this.messages[botMsgIdx].ragSteps.push(data.step);
+                                    botMessage.ragSteps.push(data.step);
                                 } else if (data.type === 'error') {
-                                    this.messages[botMsgIdx].isThinking = false;
-                                    this.messages[botMsgIdx].text += `\n[Error: ${data.content}]`;
+                                    botMessage.isThinking = false;
+                                    botMessage.text += `\n[Error: ${data.content}]`;
+                                } else if (data.type === 'ignored') {
+                                    botMessage.isThinking = false;
+                                    botMessage.text = data.content || '(重复请求已忽略)';
                                 }
                             } catch (e) {
                                 console.warn('SSE parse error:', e);
@@ -315,21 +345,33 @@ createApp({
                     this.$nextTick(() => this.scrollToBottom());
                 }
 
+                botMessage.isThinking = false;
+                if (!receivedDone) {
+                    if (!botMessage.text) {
+                        botMessage.text = '(回答已中断，可重新生成)';
+                    } else if (!botMessage.text.includes('回答已中断，可重新生成')) {
+                        botMessage.text += '\n\n_(回答已中断，可重新生成)_';
+                    }
+                }
+
             } catch (error) {
                 if (error.name === 'AbortError') {
-                    this.messages[botMsgIdx].isThinking = false;
-                    if (!this.messages[botMsgIdx].text) {
-                        this.messages[botMsgIdx].text = '(已终止回答)';
-                    } else {
-                        this.messages[botMsgIdx].text += '\n\n_(回答已被终止)_';
+                    botMessage.isThinking = false;
+                    if (this.streamAbortReason === 'manual') {
+                        if (!botMessage.text) {
+                            botMessage.text = '(已终止回答)';
+                        } else if (!botMessage.text.includes('回答已被终止')) {
+                            botMessage.text += '\n\n_(回答已被终止)_';
+                        }
                     }
                 } else {
-                    this.messages[botMsgIdx].isThinking = false;
-                    this.messages[botMsgIdx].text = `出了点问题：${error.message}`;
+                    botMessage.isThinking = false;
+                    botMessage.text = `出了点问题：${error.message}`;
                 }
             } finally {
                 this.isLoading = false;
                 this.abortController = null;
+                this.streamAbortReason = '';
                 this.$nextTick(() => this.scrollToBottom());
             }
         },
@@ -365,6 +407,7 @@ createApp({
 
         handleNewChat() {
             if (!this.isAuthenticated) return;
+            this.cancelActiveStream('new_chat');
             this.messages = [];
             this.sessionId = 'session_' + Date.now();
             this.activeNav = 'newChat';
@@ -373,6 +416,7 @@ createApp({
 
         handleClearChat() {
             if (confirm('确定要清空当前对话吗？')) {
+                this.cancelActiveStream('clear_chat');
                 this.messages = [];
             }
         },
@@ -394,6 +438,7 @@ createApp({
         },
 
         async loadSession(sessionId) {
+            this.cancelActiveStream('switch_session');
             this.sessionId = sessionId;
             this.showHistorySidebar = false;
             this.activeNav = 'newChat';

@@ -3,12 +3,15 @@ import os
 import asyncio
 import logging
 from copy import copy
+from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
 
 from langchain.chat_models import init_chat_model
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, AIMessage, AIMessageChunk, SystemMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from sqlalchemy.exc import IntegrityError
 from backend.app.tools import (
     search_knowledge_base,
     list_skills,
@@ -21,10 +24,9 @@ from backend.app.tools import (
     reset_tool_call_guards,
     set_rag_step_queue,
 )
-from datetime import datetime
 from backend.app.core.cache import cache
 from backend.app.db.session import SessionLocal
-from backend.app.db.models import User, ChatSession, ChatMessage, MCPServerConfig
+from backend.app.db.models import User, ChatSession, ChatMessage, ChatRequestRecord, MCPServerConfig
 from backend.app.skills.skill_loader import get_skill_index_text
 from backend.app.core.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
@@ -38,6 +40,19 @@ _MCP_TOOLS_CACHE = None
 _MCP_CLIENT_LOCK = None
 LOCAL_TOOL_SOURCE_LABEL = "LOCAL"
 MCP_TOOL_SOURCE_LABEL = "MCP"
+CHAT_REQUEST_STATUS_RUNNING = "running"
+CHAT_REQUEST_STATUS_SUCCEEDED = "succeeded"
+CHAT_REQUEST_STATUS_FAILED = "failed"
+CHAT_REQUEST_STATUS_CANCELLED = "cancelled"
+
+
+@dataclass
+class ChatRequestLease:
+    action: str
+    record_id: int | None = None
+    response_content: str = ""
+    rag_trace: dict | None = None
+    error_message: str = ""
 
 # 尽量复制一份工具对象，避免后面对工具打标签时直接改到原对象
 def _clone_tool(tool):
@@ -612,6 +627,119 @@ async def create_agent_instance(skill_context: dict | None = None):
 
 storage = ConversationStorage()
 
+# 在真正调用大模型之前，先做一次“聊天请求幂等检查”，决定这次请求应该：直接执行、复用历史结果、忽略重复请求还是报错
+def begin_chat_request(user_id: str, session_id: str, user_text: str, idempotency_key: str | None = None,) -> ChatRequestLease:
+    # 如果没有幂等key，直接执行
+    if not idempotency_key:
+        return ChatRequestLease(action="execute")
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == user_id).first()
+        if not user:
+            return ChatRequestLease(action="execute")
+
+        # 查找有没有同一个幂等请求记录
+        existing = (
+            db.query(ChatRequestRecord)
+            .filter(
+                ChatRequestRecord.user_id == user.id,
+                ChatRequestRecord.session_id == session_id,
+                ChatRequestRecord.idempotency_key == idempotency_key,
+            )
+            .first()
+        )
+        if existing:
+            if existing.request_message != user_text:
+                return ChatRequestLease(
+                    action="conflict",
+                    record_id=existing.id,
+                    error_message="同一个幂等 key 不能对应不同的消息内容。",
+                )
+            if existing.status == CHAT_REQUEST_STATUS_SUCCEEDED:
+                return ChatRequestLease(
+                    action="replay",
+                    record_id=existing.id,
+                    response_content=existing.response_content or "",
+                    rag_trace=existing.rag_trace,
+                )
+            if existing.status == CHAT_REQUEST_STATUS_RUNNING:
+                return ChatRequestLease(action="ignore", record_id=existing.id)
+
+            # 如果是其他状态，重置为运行中
+            existing.status = CHAT_REQUEST_STATUS_RUNNING
+            existing.response_content = ""
+            existing.rag_trace = None
+            existing.error_message = ""
+            existing.updated_at = datetime.utcnow()
+            db.commit()
+            return ChatRequestLease(action="execute", record_id=existing.id)
+
+        # 如果没查到旧纪录，说明是第一次见到这个key，于是创建一条新纪录
+        record = ChatRequestRecord(
+            user_id=user.id,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+            request_message=user_text,
+            status=CHAT_REQUEST_STATUS_RUNNING,
+            updated_at=datetime.utcnow(),
+        )
+        db.add(record)
+        try:
+            db.commit()
+        except IntegrityError:   # 解决并发竞争，数据库唯一约束会保证另一个插入失败，抛出 IntegrityError
+            db.rollback()
+            duplicate = (
+                db.query(ChatRequestRecord)
+                .filter(
+                    ChatRequestRecord.user_id == user.id,
+                    ChatRequestRecord.session_id == session_id,
+                    ChatRequestRecord.idempotency_key == idempotency_key,
+                )
+                .first()
+            )
+            if duplicate:
+                if duplicate.status == CHAT_REQUEST_STATUS_SUCCEEDED:
+                    return ChatRequestLease(
+                        action="replay",
+                        record_id=duplicate.id,
+                        response_content=duplicate.response_content or "",
+                        rag_trace=duplicate.rag_trace,
+                    )
+                if duplicate.status == CHAT_REQUEST_STATUS_RUNNING:
+                    return ChatRequestLease(action="ignore", record_id=duplicate.id)
+                duplicate.status = CHAT_REQUEST_STATUS_RUNNING
+                duplicate.response_content = ""
+                duplicate.rag_trace = None
+                duplicate.error_message = ""
+                duplicate.updated_at = datetime.utcnow()
+                db.commit()
+                return ChatRequestLease(action="execute", record_id=duplicate.id)
+            raise
+        db.refresh(record)
+        return ChatRequestLease(action="execute", record_id=record.id)
+    finally:
+        db.close()
+
+# 把某一条聊天请求的幂等记录更新成最新状态
+def update_chat_request_record(record_id: int | None, *, status: str, response_content: str = "", rag_trace: dict | None = None, error_message: str = "", ) -> None:
+    if not record_id:
+        return
+
+    db = SessionLocal()
+    try:
+        record = db.query(ChatRequestRecord).filter(ChatRequestRecord.id == record_id).first()
+        if not record:
+            return
+        record.status = status
+        record.response_content = response_content or ""
+        record.rag_trace = rag_trace
+        record.error_message = error_message or ""
+        record.updated_at = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
+
 # 将旧消息总结为摘要
 async def summarize_old_messages(model, messages: list) -> str:
     # 提取旧对话
@@ -630,66 +758,90 @@ async def summarize_old_messages(model, messages: list) -> str:
     return summary
 
 # 使用Agent处理用户消息并返回响应
-async def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
-    messages = storage.load(user_id, session_id)
-    session_metadata = storage.get_session_metadata(user_id, session_id)
-    skill_context = session_metadata.get("skill_context") if isinstance(session_metadata, dict) else {}
+async def chat_with_agent(
+    user_text: str,
+    user_id: str = "default_user",
+    session_id: str = "default_session",
+    request_record_id: int | None = None,
+):
+    try:
+        messages = storage.load(user_id, session_id)
+        session_metadata = storage.get_session_metadata(user_id, session_id)
+        skill_context = session_metadata.get("skill_context") if isinstance(session_metadata, dict) else {}
 
-    # 清理可能残留的RAG上下文，避免跨请求污染
-    get_last_rag_context(clear = True)
-    initialize_skill_context(skill_context)
-    reset_tool_call_guards()
+        # 清理可能残留的RAG上下文，避免跨请求污染
+        get_last_rag_context(clear = True)
+        initialize_skill_context(skill_context)
+        reset_tool_call_guards()
 
-    if len(messages) > 50:
-        summary = await summarize_old_messages(get_chat_model(), messages[:40])
-        messages = [
-            SystemMessage(content = f"之前的对话摘要：\n{summary}")
-        ] + messages[40:]
+        if len(messages) > 50:
+            summary = await summarize_old_messages(get_chat_model(), messages[:40])
+            messages = [
+                SystemMessage(content = f"之前的对话摘要：\n{summary}")
+            ] + messages[40:]
 
-    runtime_agent, _ = await create_agent_instance(skill_context)
-    messages.append(HumanMessage(content = user_text))
-    result = await runtime_agent.ainvoke(
-        {"messages": messages},
-        config={"recursion_limit": 8},
-    )
+        runtime_agent, _ = await create_agent_instance(skill_context)
+        messages.append(HumanMessage(content = user_text))
+        result = await runtime_agent.ainvoke(
+            {"messages": messages},
+            config={"recursion_limit": 8},
+        )
 
-    response_content = ""
-    if isinstance(result, dict):
-        if "output" in result:
-            response_content = result["output"]
-        elif "messages" in result and result["messages"]:
-            msg = result["messages"][-1]
-            response_content = getattr(msg, "content", str(msg))
+        response_content = ""
+        if isinstance(result, dict):
+            if "output" in result:
+                response_content = result["output"]
+            elif "messages" in result and result["messages"]:
+                msg = result["messages"][-1]
+                response_content = getattr(msg, "content", str(msg))
+            else:
+                response_content = str(result)
+        
+        elif hasattr(result, "content"):
+            response_content = result.content
         else:
             response_content = str(result)
-    
-    elif hasattr(result, "content"):
-        response_content = result.content
-    else:
-        response_content = str(result)
 
-    messages.append(AIMessage(content = response_content))
+        messages.append(AIMessage(content = response_content))
 
-    rag_context = get_last_rag_context(clear = True)
-    rag_trace = rag_context.get("rag_trace") if rag_context else None
-    updated_skill_context = get_last_skill_context(clear = True) or skill_context
-    updated_metadata = dict(session_metadata or {})
-    updated_metadata["skill_context"] = updated_skill_context
+        rag_context = get_last_rag_context(clear = True)
+        rag_trace = rag_context.get("rag_trace") if rag_context else None
+        updated_skill_context = get_last_skill_context(clear = True) or skill_context
+        updated_metadata = dict(session_metadata or {})
+        updated_metadata["skill_context"] = updated_skill_context
 
-    extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
-    storage.save(user_id, session_id, messages, metadata = updated_metadata, extra_message_data = extra_message_data)
+        extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
+        storage.save(user_id, session_id, messages, metadata = updated_metadata, extra_message_data = extra_message_data)
+        update_chat_request_record(
+            request_record_id,
+            status=CHAT_REQUEST_STATUS_SUCCEEDED,
+            response_content=response_content,
+            rag_trace=rag_trace,
+        )
 
-    return {
-        "response": response_content,
-        "rag_trace": rag_trace,
-    }
+        return {
+            "response": response_content,
+            "rag_trace": rag_trace,
+        }
+    except Exception as exc:
+        update_chat_request_record(
+            request_record_id,
+            status=CHAT_REQUEST_STATUS_FAILED,
+            error_message=str(exc),
+        )
+        raise
 
 """ 
 使用Agent处理用户消息并流式返回响应。
 架构：使用统一输出队列+后台任务,确保RAG检索步骤在工具执行期间实时推送,而非等待工具完成后才显示。
 """
 # async def（异步函数）：可以暂停执行，遇到等待操作时，会把程序控制权交出去
-async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
+async def chat_with_agent_stream(
+    user_text: str,
+    user_id: str = "default_user",
+    session_id: str = "default_session",
+    request_record_id: int | None = None,
+):
     messages = storage.load(user_id, session_id)
     session_metadata = storage.get_session_metadata(user_id, session_id)
     skill_context = session_metadata.get("skill_context") if isinstance(session_metadata, dict) else {}
@@ -702,6 +854,7 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
     # 统一输出队列：所有事件（content / rag_step）都汇入这里
     output_queue = asyncio.Queue()
     captured_rag_trace = [None]  # 用列表避免closure问题，捕获最后的rag_trace
+    stream_state = {"status": "running"}
 
     class _RagStepProxy:
         """代理对象: 将emit_rag_step的原始step dict包装后放入统一输出队列"""
@@ -748,7 +901,12 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
                     full_response += content
                     await output_queue.put({"type": "content", "content": content})
 
+            stream_state["status"] = "completed"
+        except asyncio.CancelledError:
+            stream_state["status"] = "cancelled"
+            raise
         except Exception as e:
+            stream_state["status"] = "failed"
             await output_queue.put({"type": "error", "content": str(e)})
         finally:
             # 在agent完成后立即捕获RAG trace，然后通知主循环完成
@@ -778,6 +936,11 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
             await agent_task
         except asyncio.CancelledError:
             pass  # 任务已成功取消
+        update_chat_request_record(
+            request_record_id,
+            status=CHAT_REQUEST_STATUS_CANCELLED,
+            error_message="客户端已取消本次流式请求。",
+        )
         raise  # 重新抛出 GeneratorExit 以便 FastAPI 正确处理关闭 
 
     finally:
@@ -788,6 +951,14 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
 
     # 获取捕获到的RAG trace（已在_agent_worker中捕获）
     rag_trace = captured_rag_trace[0]
+
+    if stream_state["status"] != "completed":
+        update_chat_request_record(
+            request_record_id,
+            status=CHAT_REQUEST_STATUS_CANCELLED if stream_state["status"] == "cancelled" else CHAT_REQUEST_STATUS_FAILED,
+            error_message="客户端已取消本次流式请求。" if stream_state["status"] == "cancelled" else "流式响应未正常完成。",
+        )
+        return
 
     # 始终发送 trace 信息（即使为空也要发送，便于前端处理）
     yield f"data: {json.dumps({'type': 'trace', 'rag_trace': rag_trace})}\n\n"
@@ -802,3 +973,9 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
     updated_metadata["skill_context"] = updated_skill_context
     extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
     storage.save(user_id, session_id, messages, metadata = updated_metadata, extra_message_data = extra_message_data)
+    update_chat_request_record(
+        request_record_id,
+        status=CHAT_REQUEST_STATUS_SUCCEEDED,
+        response_content=full_response,
+        rag_trace=rag_trace,
+    )

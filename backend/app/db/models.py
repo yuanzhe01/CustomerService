@@ -47,6 +47,30 @@ class ChatMessage(Base):
 
     session = relationship("ChatSession", back_populates="messages")
 
+# 聊天请求幂等记录
+# 唯一约束：(user_id, session_id, idempotency_key)
+# 记录 status / response_content / rag_trace / error_message
+class ChatRequestRecord(Base):
+    __tablename__ = "chat_request_records"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "session_id", "idempotency_key", name="uq_chat_request_idempotency"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    request_message: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    response_content: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    rag_trace: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User")
+
 # 存储文档分块信息（包括原始文件路径、分块文本内容、层级关系等）
 class ParentChunk(Base):
     __tablename__ = "parent_chunks"
