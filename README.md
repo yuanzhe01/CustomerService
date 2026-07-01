@@ -82,47 +82,38 @@ Frontend Workbench
 
 ## `/chat/stream` 时序图
 
-下面这张时序图只描述流式聊天接口 `/chat/stream` 的处理链路，包含幂等检查、正常流式输出、历史结果回放以及重复请求忽略这几种分支。
+下面这张时序图只描述 Python Agent 微服务内部的流式聊天处理链路。请求级鉴权、限流、熔断、幂等与分布式锁由上游 Java 服务负责；Python 侧专注 Agent 生成、RAG/Tool/MCP 调用，以及会话写入时的乐观锁保护。
 
 ```mermaid
 sequenceDiagram
     participant FE as Frontend
+    participant JAVA as Java Service
     participant API as FastAPI /chat/stream
-    participant IDC as begin_chat_request
     participant DB as PostgreSQL
     participant SVC as chat_with_agent_stream
     participant AG as LangChain Agent
 
-    FE->>API: POST /chat/stream<br/>message + session_id + idempotency_key
-    API->>IDC: 检查幂等请求
-    IDC->>DB: 查询 ChatRequestRecord
-
-    alt 首次请求或失败后再次执行
-        IDC->>DB: 写入/更新 status=running
-        IDC-->>API: action=execute
-        API->>SVC: 启动流式聊天
-        SVC->>AG: astream(...)
-        loop 持续推送事件
-            AG-->>SVC: content / rag_step / trace
-            SVC-->>API: SSE chunk
-            API-->>FE: data: content / rag_step
-        end
-        SVC->>DB: 保存会话消息
-        SVC->>DB: 更新 ChatRequestRecord=status=succeeded
-        API-->>FE: data: trace
-        API-->>FE: data: [DONE]
-    else 幂等命中且已成功
-        IDC-->>API: action=replay
-        API-->>FE: data: content(历史结果)
-        API-->>FE: data: trace(历史结果)
-        API-->>FE: data: [DONE]
-    else 幂等命中且正在处理中
-        IDC-->>API: action=ignore
-        API-->>FE: data: ignored
-        API-->>FE: data: [DONE]
-    else 同一个 key 对应不同消息内容
-        IDC-->>API: action=conflict
-        API-->>FE: data: error
+    FE->>JAVA: POST chat request
+    JAVA->>JAVA: 鉴权 / 限流 / 熔断 / 幂等 / 分布式锁
+    JAVA->>API: POST /chat/stream<br/>message + session_id
+    API->>SVC: 启动流式聊天
+    SVC->>DB: 读取会话快照 + updated_at 版本
+    SVC->>AG: astream(...)
+    loop 持续推送事件
+        AG-->>SVC: content / rag_step / trace
+        SVC-->>API: SSE chunk
+        API-->>JAVA: data: content / rag_step
+        JAVA-->>FE: data: content / rag_step
+    end
+    SVC->>DB: 追加本轮消息并校验会话版本
+    alt 版本未变化
+        DB-->>SVC: 写入成功
+        API-->>JAVA: data: trace + [DONE]
+        JAVA-->>FE: data: trace + [DONE]
+    else 版本已变化
+        DB-->>SVC: 乐观锁冲突
+        API-->>JAVA: 409 / error event
+        JAVA-->>FE: 冲突处理或重试
     end
 ```
 
@@ -150,7 +141,7 @@ agent/
 │     │  └─ cache.py              # Redis 缓存封装
 │     ├─ db/
 │     │  ├─ session.py            # SQLAlchemy Engine、SessionLocal、Base、init_db
-│     │  └─ models.py             # 用户、会话、消息、聊天幂等记录、父级分块、MCP 配置等 ORM 模型
+│     │  └─ models.py             # 用户、会话、消息、父级分块、MCP 配置等 ORM 模型
 │     ├─ services/
 │     │  └─ agent_service.py      # LangChain Agent、MCP 工具装配、会话存储逻辑
 │     ├─ rag/
@@ -186,7 +177,7 @@ agent/
 - 对话消息存储在 PostgreSQL 中
 - Redis 用于缓存消息与会话元数据
 - 支持 `/chat` 普通响应和 `/chat/stream` SSE 流式响应
-- 流式对话支持请求级幂等控制：同一个 `idempotency_key` 已成功则直接复用历史结果，进行中则忽略重复提交
+- Python Agent 服务不再承担请求级幂等控制；鉴权、限流、熔断、幂等与分布式锁由上游 Java 服务负责
 - 当一个窗口中的历史对话过长时，agent会自动进行会话摘要，减少上下文长度
 
 ### 2. 知识库能力
@@ -291,7 +282,7 @@ skills/
 3. MCP模块化扩展：支持 Agent 在运行时根据 stdio 或 Streamable HTPP 模式动态调用外部 MCP Server 的能力
 4. 使用 ContextVar 管理请求级上下文，替代简单全局变量，避免并发场景下的上下文污染，提升异步对话链路的隔离性和稳定性
 5. 优化了 RAG 模型单例初始化机制：为_stepback_model、 _grader_model 和 _router_model增加带锁的懒初始化，避免高并发首次访问时重复创建模型实例，提升 RAG 链路在并发场景下的稳定性与资源利用效率
-6. 增加聊天请求幂等保护：前端为每次业务发送生成 `idempotency_key`，后端基于 `user_id + session_id + idempotency_key` 做唯一约束与状态记录；同一请求已成功则直接回放历史结果，进行中则忽略重复提交，避免弱网重试或重复点击导致模型被重复执行
+6. 调整服务职责边界：请求级鉴权、限流、熔断、幂等与分布式锁交由上游 Java 服务负责，Python Agent 服务专注回答生成、RAG/Tool/MCP 调用，并通过会话版本戳保护会话写入一致性
 
 ## 许可证
 MIT License

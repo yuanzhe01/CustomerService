@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from backend.app.api._shared import MAX_SKILL_ZIP_BYTES, prepare_skill_import, save_upload_file
-from backend.app.core.security import require_admin
+from backend.app.core.request_context import require_admin
 from backend.app.db.models import User
 from backend.app.schemas import SkillInfo, SkillListResponse, SkillUploadResponse
 from backend.app.skills.skill_loader import SKILLS_DIR, scan_skill_index

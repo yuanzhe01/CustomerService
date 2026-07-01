@@ -29,7 +29,6 @@ class CurrentUserResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = "default_session"
-    idempotency_key: Optional[str] = None
 
 
 class RetrievedChunk(BaseModel):

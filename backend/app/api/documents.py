@@ -17,7 +17,7 @@ from backend.app.api._shared import (
     save_upload_file,
     upload_job_manager,
 )
-from backend.app.core.security import require_admin
+from backend.app.core.request_context import require_admin
 from backend.app.db.models import User
 from backend.app.schemas import (
     DocumentDeleteJobResponse,

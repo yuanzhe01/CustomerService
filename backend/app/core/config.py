@@ -23,12 +23,6 @@ REDIS_DEFAULT_TTL = int(_get_env("REDIS_DEFAULT_TTL", "300"))
 MILVUS_URI = _get_env("MILVUS_URI", "tcp://127.0.0.1:19530")
 MILVUS_COLLECTION_NAME = _get_env("MILVUS_COLLECTION_NAME", "embeddings_collection")
 
-JWT_SECRET_KEY = _get_env("JWT_SECRET_KEY", required=True)
-JWT_ALGORITHM = _get_env("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(_get_env("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
-ADMIN_INVITE_CODE = _get_env("ADMIN_INVITE_CODE", "")
-PBKDF2_ROUNDS = int(_get_env("PBKDF2_ROUNDS", "310000"))
-
 LLM_API_KEY = _get_env("LLM_API_KEY", required=True)
 LLM_BASE_URL = _get_env("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 LLM_MODEL = _get_env("LLM_MODEL", "qwen3.6-plus")

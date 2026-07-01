@@ -1,9 +1,8 @@
 from fastapi import APIRouter
 
-from . import auth, chat, documents, mcp, skills
+from . import chat, documents, mcp, skills
 
 router = APIRouter()
-router.include_router(auth.router)
 router.include_router(chat.router)
 router.include_router(documents.router)
 router.include_router(skills.router)

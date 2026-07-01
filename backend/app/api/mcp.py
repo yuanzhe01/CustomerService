@@ -10,7 +10,7 @@ from backend.app.api._shared import (
     save_mcp_server_asset,
     serialize_mcp_server,
 )
-from backend.app.core.security import get_db, require_admin
+from backend.app.core.request_context import get_db, require_admin
 from backend.app.db.models import MCPServerConfig, User
 from backend.app.schemas import MCPServerDeleteResponse, MCPServerListResponse, MCPServerMutationResponse
 from backend.app.services.agent_service import invalidate_mcp_runtime_cache
